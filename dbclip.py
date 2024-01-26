@@ -2,7 +2,7 @@ from typing import Any, Mapping
 import yaml, torch
 import torch.nn as nn
 from datasets import UnifiedFrameSampler, spatial_temporal_view_decomposition
-import open_clip_modified.src.open_clip as open_clip
+import open_clip_m as open_clip
 import time
 from torch.cuda.amp import autocast
 from Visual_Prompt import visual_prompt
@@ -159,7 +159,6 @@ class encodeMultiVideo(nn.Module):
         super().__init__()
         self.num_clips = num_clips
         T = video_len // num_clips
-        self.image_encoder = clip_model.encode_image
         self.scale = clip_model.logit_scale
 
         state = torch.load('visual.proj.pt').cuda()
@@ -173,14 +172,14 @@ class encodeMultiVideo(nn.Module):
         assert t % self.num_clips == 0
         images = video.reshape(-1, c, h, w)
         with torch.no_grad():
-            _, positional_features = self.image_encoder(images)
+            _, positional_features = clip_model.encode_image(images)
             positional_pooled = positional_features.mean(1, keepdim=False)
             # diff_frame = positional_pooled - positional_pooled.roll(1,0)
             _, width = positional_pooled.shape
             positional_pooled = positional_pooled.reshape(b * self.num_clips, 
                                                           t // self.num_clips, width)
                                                                          # b, 64, 768
-            image_features = positional_pooled @ self.visual_projection  # b, 64, 512
+        image_features = positional_pooled @ self.visual_projection  # b, 64, 512
         video_feature = self.temp_fusion(image_features)
         image_feature = self.temp_fusion_clips(video_feature.reshape(b, self.num_clips, -1))
         image_feature = nn.functional.layer_norm(image_feature, [512])
