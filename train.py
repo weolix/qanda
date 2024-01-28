@@ -1,7 +1,7 @@
 import glob
 import os
 import torch
-from tqdm import tqdm
+from rich.progress import track
 import numpy as np
 import wandb
 from torch.cuda.amp import autocast
@@ -141,16 +141,16 @@ def train(model, train_set, val_set):
     optimizer = torch.optim.AdamW(model.parameters(), lr=0.001)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, 20)
     
-    best_plcc = 0.69
+    best_plcc = 0.8
     model.train()
     # torch.autograd.set_detect_anomaly(True)
     for epoch in range(20):
-        print('epoch: ', epoch+1)
+        print('epoch:', epoch+1, '\t', 'lr:', scheduler.get_last_lr()[0])
         wandb.log({'epoch': epoch ,'lr': scheduler.get_last_lr()[0]})
         
         # train
         epoch_loss = 0.
-        for a, t, gt in tqdm(train_loader):
+        for a, t, gt in track(train_loader,description=str()+' train'):
             optimizer.zero_grad()
             with autocast():
                 res = model(a, t)
@@ -171,7 +171,7 @@ def train(model, train_set, val_set):
             optimizer.step()
 
             epoch_loss += all_loss
-            # print('loss: ', loss.item())
+
             torch.save(model.state_dict(), 'pretrain/now.pt')
 
         wandb.log({'epoch loss': epoch_loss, 'epoch': epoch})
@@ -179,7 +179,7 @@ def train(model, train_set, val_set):
         # validate
         model.eval()
         val_prs, val_gts = [], []
-        for a, t, gt in tqdm(val_loader):
+        for a, t, gt in track(val_loader,description=str(i)+' val'):
             with torch.no_grad() and autocast():
                 res = model(a, t)
                 val_prs.extend(list(res.detach().cpu().numpy()))
@@ -283,8 +283,8 @@ if __name__ == '__main__':
     text_tokens, embedding, text_feats = dbclip.encode_text_prompts(prompts, device=Device)
 
     model = dbclip.myModel(text_tokens, embedding, share_ctx=True).to(Device)
-    # state = torch.load(r'best.pt')
-    # model.load_state_dict(state, strict=False)
+    state = torch.load(r'best.pt')
+    model.load_state_dict(state, strict=True)
     model.initialize_inference()
     # train(model, M_train_set, M_val_set,)
     train(model, K_train_set, K_val_set)
