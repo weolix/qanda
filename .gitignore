@@ -1,0 +1,14 @@
+
+# 文件
+*.sh
+.pyc
+*.pt
+*.pth
+*.json
+
+
+
+# 文件夹
+pretrain
+wandb
+__pycache__
