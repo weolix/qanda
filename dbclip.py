@@ -60,30 +60,6 @@ def encode_text_prompts(tokenizer, prompts,device="cuda"):
 def trunc_normal_(x, mean=0., std=1.):
     # From https://discuss.pytorch.org/t/implementing-truncated-normal-initializer/4778/12
     return x.normal_().fmod_(2).mul_(std).add_(mean)
-
-
-class TextEncoder(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.transformer = clip_model.transformer
-        self.positional_embedding = clip_model.positional_embedding
-        self.ln_final = clip_model.ln_final
-        self.text_projection = clip_model.text_projection
-        self.dtype = clip_model.transformer.get_cast_dtype()
-        self.attn_mask = None
-
-    def forward(self, prompts, tokenized_prompts):
-        # assert not torch.any(torch.isnan(self.text_projection))
-        x = prompts + self.positional_embedding.type(self.dtype)
-        x = x.permute(1, 0, 2).to(self.dtype)  # NLD -> LND
-        x = self.transformer(x, attn_mask=self.attn_mask)
-        x = x.permute(1, 0, 2)  # LND -> NLD
-        x = self.ln_final(x).type(self.dtype)
-        # x.shape = [batch_size, n_ctx, transformer.width]
-        # take features from the eot embedding (eot_token is the highest number in each sequence)
-        x = x[torch.arange(x.shape[0]), tokenized_prompts.argmax(dim=-1)] @ self.text_projection
-
-        return x
     
 
 class MLP(nn.Module):
@@ -130,8 +106,6 @@ class video_encoder(nn.Module):
         image_feature = self.temp_fusion(image_features)
         image_feature = nn.functional.layer_norm(image_feature, [image_feature.shape[-1]])
         return image_feature
-
-text_encoder = TextEncoder()
 
 
 class newModel(nn.Module):
