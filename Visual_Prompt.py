@@ -156,7 +156,7 @@ class visual_prompt(nn.Module):
         x = x.permute(1, 0, 2)  # LND -> NLD
         x = x.type(x_original.dtype) + x_original
 
-        return x
+        return x.mean(dim=1, keepdim=False)
 
 
 if __name__ == '__main__':
