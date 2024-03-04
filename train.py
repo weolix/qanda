@@ -89,11 +89,11 @@ def plcc_loss(y_pred, y):
 
 
 
-def train(model, train_set, val_set = None):
-    train_loader  = DataLoader(train_set, 16, shuffle=True, num_workers=4, pin_memory=True)
-    val_loader    = DataLoader(val_set, 16, num_workers=4, pin_memory=True)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=0.0006)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, 30)
+def train(model, train_set, val_set = None, epochs=30, batch_size=16):
+    train_loader  = DataLoader(train_set, batch_size, shuffle=True, num_workers=4, pin_memory=True)
+    val_loader    = DataLoader(val_set, 8, num_workers=4, pin_memory=True)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=0.0003)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs)
 
     wandb.init(
     project="aicg-vqa",
@@ -101,12 +101,13 @@ def train(model, train_set, val_set = None):
         
         "architecture": "newModel",
         "dataset": "aicg-vqa",
-        "epochs": 30,
+        "epochs": epochs,
+        "batch_size": batch_size,
     }
     )
     best_mcc = 0.78
     # torch.autograd.set_detect_anomaly(True)
-    for epoch in range(30):
+    for epoch in range(epochs):
         
         print('epoch:', epoch+1, '\t', 'lr:', scheduler.get_last_lr()[0])
         wandb.log({'epoch': epoch ,'lr': scheduler.get_last_lr()[0]})

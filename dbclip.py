@@ -149,7 +149,7 @@ class newModel(nn.Module):
         technical_feature = self.video_encoder_technical(technical_video)
         vis_feat = self.mlp_visual(torch.cat((semantic_feature, technical_feature), dim=-1)) + technical_feature
         vis_feat = self.ln(vis_feat)
-        vis_feat = self.dropout(vis_feat)
+        # vis_feat = self.dropout(vis_feat)
         match = torch.einsum('bf,bf -> b', text_feats, vis_feat)
         
         # tech_feat = self.mlp_tech(fastvqa_feature)
