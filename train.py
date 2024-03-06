@@ -1,4 +1,5 @@
 import os
+import random
 import torch
 from rich.progress import track
 import numpy as np
@@ -7,9 +8,9 @@ from torch.cuda.amp import autocast
 from torch.utils.data import DataLoader, Dataset, random_split
 from scipy.stats import pearsonr, spearmanr
 import open_clip
+from datasets import UnifiedFrameSampler, spatial_temporal_view_decomposition
 import dbclip
 import time
-
 import multiprocessing
 try:
     multiprocessing.set_start_method('spawn')
@@ -17,6 +18,49 @@ except RuntimeError:
     pass
 
 Device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+
+data_option = {
+    "technical": {
+        "fragments_h": 7,
+        "fragments_w": 7,
+        "fsize_h": 32,
+        "fsize_w": 32,
+        "aligned": 16,
+        "clip_len": 16,
+        "frame_interval": 1,
+        "num_clips": 1
+    },
+    "aesthetic": {
+        "size_h": 224,
+        "size_w": 224,
+        "clip_len": 8,
+        "frame_interval": 1,
+        "t_frag": 1,
+        "num_clips": 1
+    }
+}
+
+
+def read_video(video_path: str):
+    
+    temporal_samplers = {}
+    for sample_type, sample_option in data_option.items():
+        if "t_frag" not in sample_option:
+            # resized temporal sampling for TQE in DOVER
+            temporal_samplers[sample_type] = UnifiedFrameSampler(16,1,1)
+        else:
+            # temporal sampling for AQE in DOVER
+            temporal_samplers[sample_type] = UnifiedFrameSampler(8,1,1,1)
+    mean = torch.FloatTensor([123.675, 116.28, 103.53]).reshape(-1,1,1,1)
+    std = torch.FloatTensor([58.395, 57.12, 57.375]).reshape(-1,1,1,1)
+    video_data, _ = spatial_temporal_view_decomposition(
+        video_path, data_option, temporal_samplers,
+    )
+    va = (video_data["aesthetic"] - mean) / std
+    vt = (video_data["technical"] - mean) / std
+    return va, vt
+
 
 class NTIRE_Dataset(Dataset):
     def __init__(self, data_dir, mode='training'):
@@ -46,22 +90,24 @@ class NTIRE_Dataset(Dataset):
         return len(self.data)
     
     def __getitem__(self, index):
-        video, description, label = self.data[index]
-        video_path = os.path.join(self.video_dir, video)
-        video_data = dbclip.read_video(video_path, yml_path=r"F:/NTIREdataset/aigcc.yml")
+        video_name, description, label = self.data[index]
+        video_path = os.path.join(self.video_dir, video_name)
+        a, t = read_video(video_path)
 
-        a = video_data["aesthetic"].permute(1, 0, 2, 3)
-        t = video_data["technical"].permute(1, 0, 2, 3)
+        a = a.permute(1, 0, 2, 3)
+        t = t.permute(1, 0, 2, 3)
 
-        # if(random.random() > 0.5):
-        #     a = torch.flip(a, [3])
-        #     t = torch.flip(t, [3])
-        
         if self.mode == 'training':
+            if(random.random() > 0.5):
+                a = torch.flip(a, [3])
+                t = torch.flip(t, [3])
+            if(random.random() > 0.5):
+                a = torch.flip(a, [2])
+                t = torch.flip(t, [2])
             label = torch.tensor(label, dtype=torch.float32).unsqueeze(0)
             return a, t, description, label
         else:
-            return a, t, description, video
+            return a, t, description, video_name
 
 def rank_loss(y_pred, y):
     if(y.ndim == 1):
@@ -82,17 +128,17 @@ def plcc_loss(y_pred, y):
     y_pred = (y_pred - m_hat) / (sigma_hat + 1e-8)
     sigma, m = torch.std_mean(y, unbiased=False)
     y = (y - m) / (sigma + 1e-8)
-    loss0 = torch.nn.functional.mse_loss(y_pred, y) / 4
+    loss0 = torch.nn.functional.l1_loss(y_pred, y) / 4
     rho = torch.mean(y_pred * y)
-    loss1 = torch.nn.functional.mse_loss(rho * y_pred, y) / 4
+    loss1 = torch.nn.functional.l1_loss(rho * y_pred, y) / 4
     return ((loss0 + loss1) / 2).float()
 
 
 
-def train(model, train_set, val_set = None, epochs=30, batch_size=16):
-    train_loader  = DataLoader(train_set, batch_size, shuffle=True, num_workers=4, pin_memory=True)
-    val_loader    = DataLoader(val_set, 8, num_workers=4, pin_memory=True)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=0.0003)
+def train(model, train_set, val_set = None, epochs=40, batch_size=16, lr=0.0001):
+    train_loader  = DataLoader(train_set, batch_size, shuffle=True, num_workers=2, pin_memory=True)
+    val_loader    = DataLoader(val_set, 8, num_workers=2, pin_memory=True)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs)
 
     wandb.init(
@@ -103,6 +149,7 @@ def train(model, train_set, val_set = None, epochs=30, batch_size=16):
         "dataset": "aicg-vqa",
         "epochs": epochs,
         "batch_size": batch_size,
+        "lr": lr,
     }
     )
     best_mcc = 0.78
@@ -169,18 +216,11 @@ def train(model, train_set, val_set = None, epochs=30, batch_size=16):
             val_gts = np.stack(val_gts, 0).squeeze()
             mean_cc, plcc, srcc = 0, 0, 0
             print('\tsrcc\t\t\tplcc')
-            if val_prs.ndim > 1:
-                for i in range(16):
-                    srcc = spearmanr(val_prs[:, i], val_gts[:, i])[0]
-                    plcc = pearsonr(val_prs[:, i].squeeze(), val_gts[:, i].squeeze())[0]
-                    print(srcc, '\t', plcc)
-                    mean_cc = max(mean_cc, (plcc+srcc)/2)
-                    wandb.log({f'plcc_{i}': plcc, f'srcc_{i}': srcc, 'epoch': epoch})
-            else:
-                srcc, plcc = spearmanr(val_prs, val_gts)[0], pearsonr(val_prs, val_gts)[0]
-                wandb.log({'plcc': plcc, 'srcc': srcc, 'epoch': epoch})
-                print(srcc, '\t', plcc)
-                mean_cc = (plcc+srcc)/2
+            
+            srcc, plcc = spearmanr(val_prs, val_gts)[0], pearsonr(val_prs, val_gts)[0]
+            print(srcc, '\t', plcc)
+            wandb.log({'plcc': plcc, 'srcc': srcc, 'epoch': epoch})
+            mean_cc = (plcc+srcc)/2
             if mean_cc > best_mcc:
                 torch.save(model, "pretrain/best.pth")
                 print('saved!')

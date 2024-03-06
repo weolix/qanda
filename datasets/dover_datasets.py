@@ -265,16 +265,20 @@ def spatial_temporal_view_decomposition(
     return sampled_video, frame_inds
 
 
-import random
 
-import numpy as np
 
 
 class UnifiedFrameSampler:
     def __init__(
         self, fsize_t, fragments_t, frame_interval=1, num_clips=1, drop_rate=0.0,
     ):
-
+        '''
+        fsize_t: 每个 fragment 的 frame 数量
+        fragments_t: 时间维度的 fragment 数量
+        frame_interval: 采样间隔
+        num_clips: 采样次数
+        drop_rate: 丢帧率
+        '''
         self.fragments_t = fragments_t # 时间维度的 fragment 数量
         self.fsize_t = fsize_t # 每段 fragment 的 frame 数量
         self.size_t = fragments_t * fsize_t # 最终输出的frame size

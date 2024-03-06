@@ -1,7 +1,6 @@
 import os
 import yaml, torch
 import torch.nn as nn
-from datasets import UnifiedFrameSampler, spatial_temporal_view_decomposition
 
 from Visual_Prompt import visual_prompt
 import open_clip
@@ -12,48 +11,6 @@ os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 Device = 'cuda' if torch.cuda.is_available() else 'cpu'
 clip_model = open_clip.load_openai_model('ViT-B-32')
 
-
-def read_video(video_path: str, yml_path: str = r"maxvqa.yml", data_set = "universal"):
-    with open(yml_path, "r") as f:
-        opt = yaml.safe_load(f)
-
-        data_option = opt["data"][data_set]["args"]
-
-        temporal_samplers = {}
-        for sample_type, sample_option in data_option["sample_types"].items():
-            if "t_frag" not in sample_option:
-                # resized temporal sampling for TQE in DOVER
-                temporal_samplers[sample_type] = UnifiedFrameSampler(
-                    sample_option["clip_len"], sample_option["num_clips"], sample_option["frame_interval"]
-                )
-            else:
-                # temporal sampling for AQE in DOVER
-                temporal_samplers[sample_type] = UnifiedFrameSampler(
-                    sample_option["clip_len"] // sample_option["t_frag"],
-                    sample_option["t_frag"],
-                    sample_option["frame_interval"],
-                    sample_option["num_clips"],
-                )
-    mean = torch.FloatTensor([123.675, 116.28, 103.53]).reshape(-1,1,1,1)
-    std = torch.FloatTensor([58.395, 57.12, 57.375]).reshape(-1,1,1,1)
-    video_data, _ = spatial_temporal_view_decomposition(
-        video_path, data_option["sample_types"], temporal_samplers,
-    )
-    video_data = {"aesthetic": (video_data["aesthetic"] - mean) / std,
-                  "technical": (video_data["technical"] - mean) / std}
-    return video_data
-
-def encode_text_prompts(tokenizer, prompts,device="cuda"):
-        text_tokens = tokenizer(prompts).to(device)
-        with torch.no_grad():
-            embedding = clip_model.token_embedding(text_tokens)
-            text_features = clip_model.encode_text(text_tokens).float()
-        return text_tokens, embedding, text_features
-
-
-def trunc_normal_(x, mean=0., std=1.):
-    # From https://discuss.pytorch.org/t/implementing-truncated-normal-initializer/4778/12
-    return x.normal_().fmod_(2).mul_(std).add_(mean)
     
 
 class MLP(nn.Module):
@@ -111,9 +68,9 @@ class newModel(nn.Module):
         super().__init__()
 
         self.video_encoder_aesthetic = video_encoder(n_frames//2)
-        self.video_encoder_technical = eff_model.EVLTransformer(num_frames=n_frames, enable_temporal_conv=False)
+        self.video_encoder_technical = eff_model.EVLTransformer(num_frames=n_frames)
         self.mlp_visual = MLP(512+512, 64, 512)
-        self.dropout = nn.Dropout()
+        # self.dropout = nn.Dropout()
         self.ln = nn.LayerNorm([512])
         # self.mlp_tech = MLP(768, 64, 8)
         # self.vqa_head = nn.Linear(16, 1)
@@ -129,11 +86,12 @@ class newModel(nn.Module):
 
     def forward(self, aesthetic_video, technical_video, tokens):
 
-        with torch.no_grad():
-        #     batch_size = aesthetic_video.shape[0]
-        #     self.q_batch_token = torch.cat([self.q_token] * batch_size, dim=0)
-            text_feats = clip_model.encode_text(tokens).float()
-        # # 生成query，key和value
+        # 拼接文本特征
+        # batch_size = aesthetic_video.shape[0]
+        # self.q_batch_token = torch.cat([self.q_token] * batch_size, dim=0)
+        text_feats = clip_model.encode_text(tokens).float()
+
+        # # 生成query，key和value, 融合文本特征
         # query = self.query_proj(self.q_batch_token.unsqueeze(1))
         # key = self.key_proj(text_feats.unsqueeze(1))
         # value = self.value_proj(text_feats.unsqueeze(1))

@@ -155,7 +155,7 @@ class EVLTransformer(nn.Module):
         num_frames: int = 16,
         backbone_name: str = 'ViT-B/16',
         backbone_type: str = 'clip',
-        backbone_path: str = 'efficientvideorecognition/pts/ViT-B-16.pt',
+        backbone_path: str = '~/.cache/clip/ViT-B-16.pt',
         backbone_mode: str = 'freeze_fp16',
         decoder_num_layers: int = 4,
         decoder_qkv_dim: int = 768,
