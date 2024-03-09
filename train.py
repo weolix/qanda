@@ -142,7 +142,7 @@ def train(model, train_set, val_set = None, epochs=60, batch_size=24, lr=0.0002)
     train_loader  = DataLoader(train_set, batch_size, shuffle=True, num_workers=2, pin_memory=True)
     val_loader    = DataLoader(val_set, 16, num_workers=2, pin_memory=True)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs//3, 1, 0.0001)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs//3, 0.0001)
 
     wandb.init(
     project="aicg-vqa",
@@ -183,7 +183,7 @@ def train(model, train_set, val_set = None, epochs=60, batch_size=24, lr=0.0002)
                 res = model(a, t, tokens, epoch)
                 
                 all_loss = 0.
-                all_loss = plcc_loss(res[:, 0], gt[:, 0])
+                all_loss = plcc_loss(res, gt)
             wandb.log({'loss': all_loss})
 
             # with torch.autograd.detect_anomaly():

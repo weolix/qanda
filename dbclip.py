@@ -122,4 +122,4 @@ class newModel(nn.Module):
         # tech_feat = self.mlp_tech(fastvqa_feature)
         # res = self.vqa_head(torch.cat((match, tech_feat), dim=-1))
 
-        return match.unsqueeze(-1)
+        return match
