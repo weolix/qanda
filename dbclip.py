@@ -84,7 +84,7 @@ class newModel(nn.Module):
         # fast_vqa_encoder.load_state_dict(torch.load(r"C:\Users\Administrator\Desktop\maxvqa\DOVER\pretrained_weights\DOVER.pth"),strict=False)
         # self.vqa = fast_vqa_encoder.technical_backbone
 
-    def forward(self, aesthetic_video, technical_video, tokens):
+    def forward(self, aesthetic_video, technical_video, tokens, epoch=0):
 
         # 拼接文本特征
         # batch_size = aesthetic_video.shape[0]
@@ -102,10 +102,19 @@ class newModel(nn.Module):
 
         # with torch.no_grad():
         #     fastvqa_feature = self.vqa(technical_video.permute(0, 2, 1, 3, 4)).mean((-1,-2,-3), keepdim=False)
-        
-        semantic_feature = self.video_encoder_aesthetic(aesthetic_video)
-        technical_feature = self.video_encoder_technical(technical_video)
-        vis_feat = self.mlp_visual(torch.cat((semantic_feature, technical_feature), dim=-1)) + technical_feature
+        if epoch < 20:
+            semantic_feature = self.video_encoder_aesthetic(aesthetic_video)
+            technical_feature = self.video_encoder_technical(technical_video)
+        elif epoch < 40:
+            with torch.no_grad():
+                semantic_feature = self.video_encoder_aesthetic(aesthetic_video)
+            technical_feature = self.video_encoder_technical(technical_video)
+        else:
+            semantic_feature = self.video_encoder_aesthetic(aesthetic_video)
+            with torch.no_grad():
+                technical_feature = self.video_encoder_technical(technical_video)
+            
+        vis_feat = self.mlp_visual(torch.cat((semantic_feature, technical_feature), dim=-1))
         vis_feat = self.ln(vis_feat)
         # vis_feat = self.dropout(vis_feat)
         match = torch.einsum('bf,bf -> b', text_feats, vis_feat)

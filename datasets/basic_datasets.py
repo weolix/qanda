@@ -337,7 +337,7 @@ class FastVQAPlusPlusDataset(torch.utils.data.Dataset):
                             vfrag,
                             get_spatial_fragments(
                                 video,
-                                fragments,
+                                self.fragments,
                                 fx,
                                 fy,
                                 fsx,

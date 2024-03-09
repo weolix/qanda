@@ -35,8 +35,8 @@ data_option = {
         "size_h": 224,
         "size_w": 224,
         "clip_len": 8,
-        "frame_interval": 1,
-        "t_frag": 1,
+        "frame_interval": 2,
+        "t_frag": 8,
         "num_clips": 1
     }
 }
@@ -51,7 +51,7 @@ def read_video(video_path: str):
             temporal_samplers[sample_type] = UnifiedFrameSampler(16,1,1)
         else:
             # temporal sampling for AQE in DOVER
-            temporal_samplers[sample_type] = UnifiedFrameSampler(8,1,1,1)
+            temporal_samplers[sample_type] = UnifiedFrameSampler(8,1,2)
     mean = torch.FloatTensor([123.675, 116.28, 103.53]).reshape(-1,1,1,1)
     std = torch.FloatTensor([58.395, 57.12, 57.375]).reshape(-1,1,1,1)
     video_data, _ = spatial_temporal_view_decomposition(
@@ -67,20 +67,23 @@ class NTIRE_Dataset(Dataset):
         '''
         args:
             data_dir: 数据集根目录
-            mode: 'training', 'val', 'test'
+            mode: 'train-all', 'train-train', 'train-val' 'val-all', 'test'
         '''
         super(NTIRE_Dataset, self).__init__()
-        self.video_dir = os.path.join(data_dir, mode)
         self.data = []
         self.data_dir = data_dir
         self.mode = mode
         label_file = data_dir + '/' + mode + '.txt'
-        if mode == 'training':
+
+        vdir = mode.split('-')[0]
+
+        self.video_dir = os.path.join(data_dir, vdir)
+        if 'train' in mode:
             with open(label_file, 'r', encoding='utf-8') as f:
                 for line in f:
                     video_path, description, label = line.strip().split('|')
                     self.data.append((video_path, description, float(label)))
-        else:
+        else: # test
             with open(label_file, 'r', encoding='utf-8') as f:
                 for line in f:
                     video_path, description = line.strip().split('|')
@@ -97,14 +100,14 @@ class NTIRE_Dataset(Dataset):
         a = a.permute(1, 0, 2, 3)
         t = t.permute(1, 0, 2, 3)
 
-        if self.mode == 'training':
-            if(random.random() > 0.5):
-                a = torch.flip(a, [3])
-                t = torch.flip(t, [3])
-            if(random.random() > 0.5):
-                a = torch.flip(a, [2])
-                t = torch.flip(t, [2])
-            label = torch.tensor(label, dtype=torch.float32).unsqueeze(0)
+        if 'train' in self.mode:
+            # if(random.random() > 0.5):
+            #     a = torch.flip(a, [3])
+            #     t = torch.flip(t, [3])
+            # if(random.random() > 0.5):
+            #     a = torch.flip(a, [2])
+            #     t = torch.flip(t, [2])
+            # label = torch.tensor(label, dtype=torch.float32).unsqueeze(0)
             return a, t, description, label
         else:
             return a, t, description, video_name
@@ -135,11 +138,11 @@ def plcc_loss(y_pred, y):
 
 
 
-def train(model, train_set, val_set = None, epochs=40, batch_size=16, lr=0.0001):
+def train(model, train_set, val_set = None, epochs=60, batch_size=24, lr=0.0002):
     train_loader  = DataLoader(train_set, batch_size, shuffle=True, num_workers=2, pin_memory=True)
-    val_loader    = DataLoader(val_set, 8, num_workers=2, pin_memory=True)
+    val_loader    = DataLoader(val_set, 16, num_workers=2, pin_memory=True)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs//3, 1, 0.0001)
 
     wandb.init(
     project="aicg-vqa",
@@ -152,12 +155,12 @@ def train(model, train_set, val_set = None, epochs=40, batch_size=16, lr=0.0001)
         "lr": lr,
     }
     )
-    best_mcc = 0.78
+    best_mcc = 0.77
     # torch.autograd.set_detect_anomaly(True)
     for epoch in range(epochs):
         
-        print('epoch:', epoch+1, '\t', 'lr:', scheduler.get_last_lr()[0])
-        wandb.log({'epoch': epoch ,'lr': scheduler.get_last_lr()[0]})
+        print('epoch:', epoch+1, '\t', 'lr:', optimizer.param_groups[0]['lr'])
+        wandb.log({'epoch': epoch ,'lr': optimizer.param_groups[0]['lr']})
         
         # train
         model.train(True)
@@ -167,21 +170,21 @@ def train(model, train_set, val_set = None, epochs=40, batch_size=16, lr=0.0001)
             torch.cuda.empty_cache()
             optimizer.zero_grad()
 
-            prompts = desc
+            # prompts = desc
             # quality_prompt = "a high quality picture of "
             # prompts = [quality_prompt + des  for des in desc]
 
-            tokens = open_clip.tokenize(prompts).to(Device)
+            tokens = open_clip.tokenize(desc).to(Device)
             a = a.to(Device)
             t = t.to(Device)
             gt=gt.to(Device)
 
             with autocast():
-                res = model(a, t, tokens)
+                res = model(a, t, tokens, epoch)
                 
                 all_loss = 0.
                 all_loss = plcc_loss(res[:, 0], gt[:, 0])
-                wandb.log({'loss': all_loss})
+            wandb.log({'loss': all_loss})
 
             # with torch.autograd.detect_anomaly():
             all_loss.backward(retain_graph=True)
@@ -190,6 +193,7 @@ def train(model, train_set, val_set = None, epochs=40, batch_size=16, lr=0.0001)
             epoch_loss += all_loss.detach().cpu()
             
         torch.save(model, 'pretrain/now.pth')
+        print('epoch loss:', epoch_loss)
         wandb.log({'epoch loss': epoch_loss, 'epoch': epoch})
 
         if val_set is None:
@@ -252,12 +256,12 @@ def generate_result(model, test_data):
         vid_names.extend(list(name))
         torch.cuda.empty_cache()
 
-    with open(r"F:/NTIREdataset/output.txt", 'w', newline='',encoding='utf-8') as file:
+    with open(r"../NTIREdataset/output.txt", 'w', newline='',encoding='utf-8') as file:
         writer = csv.writer(file)
         for pr, name in zip(val_prs, vid_names):
             writer.writerow([name, pr])
     
-    with open(r"F:/NTIREdataset/readme.txt", 'w', encoding='utf-8') as file:
+    with open(r"../NTIREdataset/readme.txt", 'w', encoding='utf-8') as file:
         file.write(f"Runtime per video [s] : " + str(Runtime/len(vid_names)) + '\n'
                     "CPU[1] / GPU[0] : 0" + '\n' + 
                     "Extra Data [1] / No Extra Data [0] : 0" + '\n' +
@@ -274,14 +278,14 @@ if __name__ == '__main__':
     def main():
         generator = torch.Generator().manual_seed(37)
 
-        aigc_trainset = NTIRE_Dataset(r'F:/NTIREdataset')
-        aigc_valset = NTIRE_Dataset(r'F:/NTIREdataset', mode='val')
+        aigc_trainset = NTIRE_Dataset(r'../NTIREdataset', mode='train-train')
+        aigc_valset = NTIRE_Dataset(r'../NTIREdataset', mode='train-val')
 
         model = dbclip.newModel(n_frames=16).to(Device)
         
         # state = torch.load(r'pretrain/now.pt')
         # model.load_state_dict(state, strict=True)
-        aigc_trainset, aigc_valset = random_split(aigc_trainset, (0.9, 0.1), generator)
+        # aigc_trainset, aigc_valset = random_split(aigc_trainset, (0.9, 0.1), generator)
         train(model, aigc_trainset, aigc_valset)
         
         

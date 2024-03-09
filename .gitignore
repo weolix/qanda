@@ -9,6 +9,6 @@
 
 
 # 文件夹
-pretrain
+pretrain/*
 wandb
 __pycache__
