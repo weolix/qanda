@@ -138,24 +138,24 @@ def plcc_loss(y_pred, y):
 
 
 
-def train(model, train_set, val_set = None, epochs=60, batch_size=24, lr=0.0002):
+def train(model, train_set, val_set = None, epochs=20, batch_size=24, lr=0.0002):
     train_loader  = DataLoader(train_set, batch_size, shuffle=True, num_workers=2, pin_memory=True)
     val_loader    = DataLoader(val_set, 16, num_workers=2, pin_memory=True)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs//3, 0.0001)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs, 0.0001)
 
     wandb.init(
     project="aicg-vqa",
     config={
         
-        "architecture": "newModel",
+        "architecture": "newModel continue train with vqa",
         "dataset": "aicg-vqa",
         "epochs": epochs,
         "batch_size": batch_size,
         "lr": lr,
     }
     )
-    best_mcc = 0.77
+    best_mcc = 0.7777
     # torch.autograd.set_detect_anomaly(True)
     for epoch in range(epochs):
         
@@ -180,7 +180,7 @@ def train(model, train_set, val_set = None, epochs=60, batch_size=24, lr=0.0002)
             gt=gt.to(Device)
 
             with autocast():
-                res = model(a, t, tokens, epoch)
+                res = model(a, t, tokens, 70)
                 
                 all_loss = 0.
                 all_loss = plcc_loss(res, gt)
@@ -283,8 +283,8 @@ if __name__ == '__main__':
 
         model = dbclip.newModel(n_frames=16).to(Device)
         
-        # state = torch.load(r'pretrain/now.pt')
-        # model.load_state_dict(state, strict=True)
+        model_pth = torch.load(r'pretrain/now.pth')
+        model.load_state_dict(model_pth.state_dict(), strict=False)
         # aigc_trainset, aigc_valset = random_split(aigc_trainset, (0.9, 0.1), generator)
         train(model, aigc_trainset, aigc_valset)
         
