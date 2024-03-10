@@ -121,7 +121,7 @@ class newModel(nn.Module):
         # vis_feat = self.dropout(vis_feat)
         match = torch.einsum('bf,bf -> b', text_feats, vis_feat)
         
-        vq = self.mlp_tech(fastvqa_feature)
+        vq = self.mlp_tech(fastvqa_feature).squeeze(-1)
         res = vq + match
 
         return res
