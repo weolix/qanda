@@ -57,8 +57,11 @@ def read_video(video_path: str):
     video_data, _ = spatial_temporal_view_decomposition(
         video_path, data_option, temporal_samplers,
     )
-    va = (video_data["aesthetic"] - mean) / std
-    vt = (video_data["technical"] - mean) / std
+    vt = va = torch.ones(1, 1, 1, 1)
+    if "aesthetic" in video_data.keys():
+        va = (video_data["aesthetic"] - mean) / std
+    if 'technical' in video_data.keys():
+        vt = (video_data["technical"] - mean) / std
     return va, vt
 
 
@@ -100,7 +103,7 @@ class NTIRE_Dataset(Dataset):
         a = a.permute(1, 0, 2, 3)
         t = t.permute(1, 0, 2, 3)
 
-        if 'train' in self.mode:
+        # if 'train' in self.mode:
             # if(random.random() > 0.5):
             #     a = torch.flip(a, [3])
             #     t = torch.flip(t, [3])
@@ -108,9 +111,9 @@ class NTIRE_Dataset(Dataset):
             #     a = torch.flip(a, [2])
             #     t = torch.flip(t, [2])
             # label = torch.tensor(label, dtype=torch.float32).unsqueeze(0)
-            return a, t, description, label
-        else:
-            return a, t, description, video_name
+        
+        return a, t, description, label, video_name
+
 
 def rank_loss(y_pred, y):
     if(y.ndim == 1):
@@ -138,24 +141,24 @@ def plcc_loss(y_pred, y):
 
 
 
-def train(model, train_set, val_set = None, epochs=80, batch_size=24, lr=0.0002):
-    train_loader  = DataLoader(train_set, batch_size, shuffle=True, num_workers=2, pin_memory=True)
-    val_loader    = DataLoader(val_set, 16, num_workers=2, pin_memory=True)
+def train(model, train_set, val_set = None, epochs=30, batch_size=24, lr=0.00005, num_wks=2, msg='default', best_mcc=0.75):
+    train_loader  = DataLoader(train_set, batch_size, shuffle=True, num_workers=num_wks, pin_memory=True)
+    val_loader    = DataLoader(val_set, 16, num_workers=num_wks, pin_memory=True)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs, eta_min=1e-5)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs, eta_min=3e-6)
 
     wandb.init(
     project="aicg-vqa",
     config={
         
-        "architecture": "newModel continue train with vqa",
+        "architecture": msg,
         "dataset": "aicg-vqa",
         "epochs": epochs,
         "batch_size": batch_size,
         "lr": lr,
     }
     )
-    best_mcc = 0.77
+    
     # torch.autograd.set_detect_anomaly(True)
     for epoch in range(epochs):
         
@@ -166,7 +169,7 @@ def train(model, train_set, val_set = None, epochs=80, batch_size=24, lr=0.0002)
         model.train(True)
         
         epoch_loss = 0.
-        for a, t, desc, gt in track(train_loader, description='train'):
+        for a, t, desc, gt, v_name in track(train_loader, description='train'):
             torch.cuda.empty_cache()
             optimizer.zero_grad()
 
@@ -205,7 +208,7 @@ def train(model, train_set, val_set = None, epochs=80, batch_size=24, lr=0.0002)
             # validate
             model.eval() 
             val_prs, val_gts = [], []
-            for a, t, desc, gt in track(val_loader,description=' val '):
+            for a, t, desc, gt, v_name in track(val_loader,description=' val '):
                 # prompts = [prompt + des for prompt in base_prompts for des in desc]
                 prompts = desc
                 tokens = open_clip.tokenize(prompts).to(Device)
@@ -249,7 +252,7 @@ def validate(model, val_set, norm='manmin'):
     if issubclass(type(model), torch.nn.Module):
         model.eval()
         prs, gts = [], []
-        for a, t, desc, gt in track(val_loader,description=' val '):
+        for a, t, desc, gt, v_name in track(val_loader,description=' val '):
             tokens = open_clip.tokenize(desc).to(Device)
             a = a.to(Device)
             t = t.to(Device)
@@ -267,7 +270,7 @@ def validate(model, val_set, norm='manmin'):
         for m in model:
             m.eval()
         prs1, prs2, gts = [], [], []
-        for a, t, desc, gt in track(val_loader,description=' val '):
+        for a, t, desc, gt, v_name in track(val_loader,description=' val '):
             tokens = open_clip.tokenize(desc).to(Device)
             a = a.to(Device)
             t = t.to(Device)
@@ -306,7 +309,7 @@ def generate_result(model, test_data):
     Runtime = 0
     if issubclass(type(model), torch.nn.Module):
         model.eval()
-        for a, t, desc, name in track(val_loader,description='test '):
+        for a, t, desc, label, name in track(val_loader,description='test '):
             
             tokens = open_clip.tokenize(desc).to(Device)
             a = a.to(Device)
@@ -319,6 +322,7 @@ def generate_result(model, test_data):
                 Runtime += t_dur
             
             val_prs.extend(res.detach().cpu().tolist())
+            prs = (val_prs - np.min(val_prs)) / (np.max(val_prs) - np.min(val_prs)) * 100
             vid_names.extend(list(name))
             torch.cuda.empty_cache()
 
@@ -326,7 +330,7 @@ def generate_result(model, test_data):
         prs1, prs2 = [], []
         for m in model:
             m.eval()
-        for a, t, desc, name in track(val_loader,description='test '):
+        for a, t, desc, gt, name in track(val_loader,description='test '):
             tokens = open_clip.tokenize(desc).to(Device)
             a = a.to(Device)
             t = t.to(Device)
@@ -342,12 +346,12 @@ def generate_result(model, test_data):
 
         pr1 = (prs1 - np.min(prs1)) / (np.max(prs1) - np.min(prs1))
         pr2 = (prs2 - np.min(prs2)) / (np.max(prs2) - np.min(prs2))
-        val_prs = pr1 + pr2
+        prs = (pr1 + pr2) * 50
 
 
-    with open(r"../NTIREdataset/output.txt", 'w', newline='',encoding='utf-8') as file:
+    with open(r"../NTIREdataset/output.txt", 'w', newline='', encoding='utf-8') as file:
         writer = csv.writer(file)
-        for pr, name in zip(val_prs, vid_names):
+        for pr, name in zip(prs, vid_names):
             writer.writerow([name, pr])
     
     with open(r"../NTIREdataset/readme.txt", 'w', encoding='utf-8') as file:
@@ -367,23 +371,48 @@ if __name__ == '__main__':
     def main():
         generator = torch.Generator().manual_seed(37)
 
-        train_trainset = NTIRE_Dataset(r'../NTIREdataset', mode='train-all')
-        # train_trainset = NTIRE_Dataset(r'../NTIREdataset', mode='train-train')
-        # train_valset = NTIRE_Dataset(r'../NTIREdataset', mode='train-val')
+        # train_allset = NTIRE_Dataset(r'../NTIREdataset', mode='train-all')
+        train_trainset = NTIRE_Dataset(r'../NTIREdataset', mode='train-train')
+        train_valset = NTIRE_Dataset(r'../NTIREdataset', mode='train-val')
         # val_allset = NTIRE_Dataset(r'../NTIREdataset', mode='val-all')
         # testset = NTIRE_Dataset(r'../NTIREdataset', mode='test')
 
-        model = [dbclip.fast_model(n_frames=10).to(Device), dbclip.newModel(16).to(Device)]
-        # model[0].load_state_dict(torch.load(r'pretrain/fast.pth').state_dict(), strict=True)
+        # model = [dbclip.fast_model(n_frames=10).to(Device), dbclip.newModel(16).to(Device)]
+        # model[0].load_state_dict(torch.load(r'pretrain/fast76.pth').state_dict(), strict=True)
         # model[1].load_state_dict(torch.load(r'pretrain/best7777.pth').state_dict(), strict=True)
 
+        aesmodel = dbclip.aes_model(n_frames=16).to(Device)
+        techmodel = dbclip.tech_model(n_frames=16).to(Device)
+        fastmodel = dbclip.fast_model(n_frames=16).to(Device)
+        # aesmodel.load_state_dict(torch.load(r'pretrain/aes69.pth').state_dict(), strict=True)
         # model_pth = torch.load(r'pretrain/best7777.pth')
         # model.load_state_dict(model_pth.state_dict(), strict=False)
         # aigc_trainset, aigc_valset = random_split(aigc_trainset, (0.9, 0.1), generator)
 
-        train(model[1], train_trainset)
-        # validate(model, aigc_valset)
+        config = {
+            aesmodel:
+            {
+                'epochs' : 30, 
+                'batch_size' : 128, 
+                'lr' : 0.00003, 
+                'num_wks' : 12,
+                'msg' : "only aes model"
+            },
+        }
+
+        train(techmodel, 
+              train_trainset, train_valset, 
+              epochs=30, 
+              batch_size=16, 
+              lr=0.00003, 
+              num_wks=4,
+              best_mcc=0.75,
+              msg="only tech model"
+              )
         
-        # generate_result(model, val_allset)
+        # validate(model, train_valset)
+        
+        # generate_result(model[1], train_allset)
+
 
     main()

@@ -134,8 +134,39 @@ class fast_model(nn.Module):
         self.mlp_tech = MLP(768, 64, 1)
     
     def forward(self, aesthetic_video, technical_video, tokens, epoch=0):
-
         fastvqa_feature = self.vqa(technical_video.permute(0, 2, 1, 3, 4)).mean((-1,-2,-3), keepdim=False)
         vq = self.mlp_tech(fastvqa_feature).squeeze(-1)
         return vq
     
+
+
+class aes_model(nn.Module):
+    def __init__(self, n_frames=16):
+        super().__init__()
+        self.video_encoder_aesthetic = video_encoder(n_frames//2)
+        self.mlp_visual = MLP(512, 64, 512)
+        self.ln = nn.LayerNorm([512])
+
+    def forward(self, aesthetic_video, technical_video, tokens, epoch=0):
+        txt_feat = clip_model.encode_text(tokens)
+        semantic_feature = self.video_encoder_aesthetic(aesthetic_video)
+        vis_feat = self.mlp_visual(semantic_feature)
+        vis_feat = self.ln(vis_feat)
+        match = torch.einsum('bf,bf -> b', txt_feat, vis_feat)
+        return match
+
+    
+class tech_model(nn.Module):
+    def __init__(self, n_frames=16):
+        super().__init__()
+        self.video_encoder_technical = eff_model.EVLTransformer(num_frames=n_frames)
+        self.mlp_visual = MLP(512, 64, 512)
+        self.ln = nn.LayerNorm([512])
+
+    def forward(self, aesthetic_video, technical_video, tokens, epoch=0):
+        txt_feat = clip_model.encode_text(tokens)
+        technical_feature = self.video_encoder_technical(technical_video)
+        vis_feat = self.mlp_visual(technical_feature)
+        vis_feat = self.ln(vis_feat)
+        match = torch.einsum('bf,bf -> b', txt_feat, vis_feat)
+        return match
