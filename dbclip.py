@@ -72,14 +72,14 @@ class newModel(nn.Module):
         self.mlp_visual = MLP(512+512, 64, 512)
         # self.dropout = nn.Dropout()
         self.ln = nn.LayerNorm([512])
-        self.mlp_tech = MLP(768, 64, 1)
+        # self.mlp_tech = MLP(768, 64, 1)
         # self.vqa_head = nn.Linear(16, 1)
         # quality_prompt = ['a high quality picture']
         # with torch.no_grad():
         #     self.q_token = clip_model.encode_text(open_clip.tokenize(quality_prompt).to(Device)).float()
 
 
-        self.vqa = torch.load('pretrain/DOVER_technical_backbone.pth')
+        # self.vqa = torch.load('pretrain/DOVER_technical_backbone.pth')
 
     def forward(self, aesthetic_video, technical_video, tokens, epoch=0):
 
@@ -97,8 +97,8 @@ class newModel(nn.Module):
         # fused_txt = self.txt_mlp(torch.cat((self.q_batch_token, text_feats), dim=-1))
         # fused_txt = fused_txt + text_feats
 
-        with torch.no_grad():
-            fastvqa_feature = self.vqa(technical_video.permute(0, 2, 1, 3, 4)).mean((-1,-2,-3), keepdim=False)
+        # with torch.no_grad():
+        #     fastvqa_feature = self.vqa(technical_video.permute(0, 2, 1, 3, 4)).mean((-1,-2,-3), keepdim=False)
 
         if epoch < 20:
             semantic_feature = self.video_encoder_aesthetic(aesthetic_video)
@@ -121,13 +121,21 @@ class newModel(nn.Module):
         # vis_feat = self.dropout(vis_feat)
         match = torch.einsum('bf,bf -> b', text_feats, vis_feat)
         
-        vq = self.mlp_tech(fastvqa_feature).squeeze(-1)
-        res = vq + match
+        # vq = self.mlp_tech(fastvqa_feature).squeeze(-1)
+        # res = vq + match
 
-        return res
+        return match
 
 
 class fast_model(nn.Module):
     def __init__(self, n_frames=16):
         super().__init__()
+        self.vqa = torch.load('pretrain/DOVER_technical_backbone.pth')
+        self.mlp_tech = MLP(768, 64, 1)
+    
+    def forward(self, aesthetic_video, technical_video, tokens, epoch=0):
 
+        fastvqa_feature = self.vqa(technical_video.permute(0, 2, 1, 3, 4)).mean((-1,-2,-3), keepdim=False)
+        vq = self.mlp_tech(fastvqa_feature).squeeze(-1)
+        return vq
+    

@@ -138,11 +138,11 @@ def plcc_loss(y_pred, y):
 
 
 
-def train(model, train_set, val_set = None, epochs=20, batch_size=24, lr=0.0002):
+def train(model, train_set, val_set = None, epochs=80, batch_size=24, lr=0.0002):
     train_loader  = DataLoader(train_set, batch_size, shuffle=True, num_workers=2, pin_memory=True)
     val_loader    = DataLoader(val_set, 16, num_workers=2, pin_memory=True)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs, 0.0001)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs, eta_min=1e-5)
 
     wandb.init(
     project="aicg-vqa",
@@ -155,7 +155,7 @@ def train(model, train_set, val_set = None, epochs=20, batch_size=24, lr=0.0002)
         "lr": lr,
     }
     )
-    best_mcc = 0.7777
+    best_mcc = 0.77
     # torch.autograd.set_detect_anomaly(True)
     for epoch in range(epochs):
         
@@ -180,7 +180,7 @@ def train(model, train_set, val_set = None, epochs=20, batch_size=24, lr=0.0002)
             gt=gt.to(Device)
 
             with autocast():
-                res = model(a, t, tokens, 70)
+                res = model(a, t, tokens, epoch)
                 
                 all_loss = 0.
                 all_loss = plcc_loss(res, gt)
@@ -197,7 +197,9 @@ def train(model, train_set, val_set = None, epochs=20, batch_size=24, lr=0.0002)
         wandb.log({'epoch loss': epoch_loss, 'epoch': epoch})
 
         if val_set is None:
-            torch.save(model, f'pretrain/now_{epoch}.pth')
+             if (epoch+1) % 5 == 0:
+                torch.save(model, f'pretrain/now_{epoch+1}.pth')
+        
 
         else:
             # validate
@@ -235,26 +237,113 @@ def train(model, train_set, val_set = None, epochs=20, batch_size=24, lr=0.0002)
     wandb.finish()
 
 
+def validate(model, val_set, norm='manmin'):
+    '''
+    args:
+        model: 模型
+        val_set: 验证集
+        norm: 归一化方式，'manmin'或'zscore'
+    '''
+    val_loader = DataLoader(val_set, 16, num_workers=2, pin_memory=True)
+
+    if issubclass(type(model), torch.nn.Module):
+        model.eval()
+        prs, gts = [], []
+        for a, t, desc, gt in track(val_loader,description=' val '):
+            tokens = open_clip.tokenize(desc).to(Device)
+            a = a.to(Device)
+            t = t.to(Device)
+            gt=gt.to(Device)
+            
+            with torch.no_grad() and autocast():
+                res = model(a, t, tokens)
+            prs.extend(list(res.detach().cpu().numpy()))
+            gts.extend(list(gt.detach().cpu().numpy()))
+            torch.cuda.empty_cache()
+        prs = np.stack(prs, 0).squeeze()
+
+
+    elif isinstance(model, list):
+        for m in model:
+            m.eval()
+        prs1, prs2, gts = [], [], []
+        for a, t, desc, gt in track(val_loader,description=' val '):
+            tokens = open_clip.tokenize(desc).to(Device)
+            a = a.to(Device)
+            t = t.to(Device)
+            gt=gt.to(Device)
+            with torch.no_grad():
+                res1 = model[0](a, t, tokens)
+            with torch.no_grad() and autocast():
+                res2 = model[1](a, t, tokens)
+            prs1.extend(list(res1.detach().cpu().numpy()))
+            prs2.extend(list(res2.detach().cpu().numpy()))
+            gts.extend(list(gt.detach().cpu().numpy()))
+        prs1 = np.stack(prs1, 0).squeeze()
+        prs2 = np.stack(prs2, 0).squeeze()
+        if norm == 'manmin':
+            pr1 = (prs1 - np.min(prs1)) / (np.max(prs1) - np.min(prs1))
+            pr2 = (prs2 - np.min(prs2)) / (np.max(prs2) - np.min(prs2))
+            prs = pr1 + pr2
+        elif norm == 'zscore':
+            pr1 = (prs1 - np.mean(prs1)) / np.std(prs1)
+            pr2 = (prs2 - np.mean(prs2)) / np.std(prs2)
+            prs = pr1 + pr2
+
+    gts = np.stack(gts, 0).squeeze()
+
+    srcc, plcc = spearmanr(prs, gts)[0], pearsonr(prs, gts)[0]
+    print('\tsrcc\t\t\tplcc')
+    print(srcc, '\t', plcc)
+
+
 def generate_result(model, test_data):
     import csv
     import zipfile
-    model.eval()
     val_prs, vid_names = [], []
-    val_loader = DataLoader(test_data, 16)
+    val_loader = DataLoader(test_data, 16, num_workers=2, pin_memory=True)
     
     Runtime = 0
-    for a, t, desc, name in track(val_loader,description='test '):
-        
-        prompts = desc
-        tokens = open_clip.tokenize(prompts).to(Device)
-        with torch.no_grad() and autocast():
-            t_begin = time.time()
-            res = model(a, t, tokens)
-            t_dur = time.time() - t_begin
-            Runtime += t_dur
-        val_prs.extend(res.squeeze(-1).detach().cpu().tolist())
-        vid_names.extend(list(name))
-        torch.cuda.empty_cache()
+    if issubclass(type(model), torch.nn.Module):
+        model.eval()
+        for a, t, desc, name in track(val_loader,description='test '):
+            
+            tokens = open_clip.tokenize(desc).to(Device)
+            a = a.to(Device)
+            t = t.to(Device)
+
+            with torch.no_grad() and autocast():
+                t_begin = time.time()
+                res = model(a, t, tokens)
+                t_dur = time.time() - t_begin
+                Runtime += t_dur
+            
+            val_prs.extend(res.detach().cpu().tolist())
+            vid_names.extend(list(name))
+            torch.cuda.empty_cache()
+
+    elif isinstance(model, list):
+        prs1, prs2 = [], []
+        for m in model:
+            m.eval()
+        for a, t, desc, name in track(val_loader,description='test '):
+            tokens = open_clip.tokenize(desc).to(Device)
+            a = a.to(Device)
+            t = t.to(Device)
+            with torch.no_grad():
+                res1 = model[0](a, t, tokens)
+            with torch.no_grad() and autocast():
+                res2 = model[1](a, t, tokens)
+            prs1.extend(list(res1.detach().cpu().numpy()))
+            prs2.extend(list(res2.detach().cpu().numpy()))
+            vid_names.extend(list(name))
+        prs1 = np.stack(prs1, 0).squeeze()
+        prs2 = np.stack(prs2, 0).squeeze()
+
+        pr1 = (prs1 - np.min(prs1)) / (np.max(prs1) - np.min(prs1))
+        pr2 = (prs2 - np.min(prs2)) / (np.max(prs2) - np.min(prs2))
+        val_prs = pr1 + pr2
+
 
     with open(r"../NTIREdataset/output.txt", 'w', newline='',encoding='utf-8') as file:
         writer = csv.writer(file)
@@ -268,27 +357,33 @@ def generate_result(model, test_data):
                     "LLM [1] / No LLM [0] : 0" + '\n' + 
                     'Other description : ' + 'based on open_clip.' + '\n')
         
-    zip = zipfile.ZipFile('submissions.zip', 'w')
-    zip.write('output.txt')
-    zip.write('readme.txt')
-    zip.close()
+    zp = zipfile.ZipFile('../NTIREdataset/submissions.zip', 'w')
+    zp.write("../NTIREdataset/output.txt", "output.txt")
+    zp.write("../NTIREdataset/output.txt", "readme.txt")
+    zp.close()
 
 
 if __name__ == '__main__':
     def main():
         generator = torch.Generator().manual_seed(37)
 
-        aigc_trainset = NTIRE_Dataset(r'../NTIREdataset', mode='train-train')
-        aigc_valset = NTIRE_Dataset(r'../NTIREdataset', mode='train-val')
+        train_trainset = NTIRE_Dataset(r'../NTIREdataset', mode='train-all')
+        # train_trainset = NTIRE_Dataset(r'../NTIREdataset', mode='train-train')
+        # train_valset = NTIRE_Dataset(r'../NTIREdataset', mode='train-val')
+        # val_allset = NTIRE_Dataset(r'../NTIREdataset', mode='val-all')
+        # testset = NTIRE_Dataset(r'../NTIREdataset', mode='test')
 
-        model = dbclip.newModel(n_frames=16).to(Device)
-        
-        model_pth = torch.load(r'pretrain/now.pth')
-        model.load_state_dict(model_pth.state_dict(), strict=False)
+        model = [dbclip.fast_model(n_frames=10).to(Device), dbclip.newModel(16).to(Device)]
+        # model[0].load_state_dict(torch.load(r'pretrain/fast.pth').state_dict(), strict=True)
+        # model[1].load_state_dict(torch.load(r'pretrain/best7777.pth').state_dict(), strict=True)
+
+        # model_pth = torch.load(r'pretrain/best7777.pth')
+        # model.load_state_dict(model_pth.state_dict(), strict=False)
         # aigc_trainset, aigc_valset = random_split(aigc_trainset, (0.9, 0.1), generator)
-        train(model, aigc_trainset, aigc_valset)
+
+        train(model[1], train_trainset)
+        # validate(model, aigc_valset)
         
-        
-        # generate_result(model, aigc_valset)
+        # generate_result(model, val_allset)
 
     main()
