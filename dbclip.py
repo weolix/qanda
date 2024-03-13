@@ -43,7 +43,7 @@ class video_encoder(nn.Module):
         super().__init__()
         self.temp_fusion = visual_prompt(clip_model.state_dict(), video_len)
         self.vis_proj = nn.Linear(768, 512, bias=False)
-
+        self.conv1d = nn.Conv1d(512, 512, kernel_size=3, padding=1)
     def forward(self, video):
         b, t, c, h, w = video.shape
 
@@ -127,6 +127,35 @@ class newModel(nn.Module):
         return match
 
 
+class fast_clip_decoder_model(nn.Module):
+    '''
+    计算图文匹配度和视频质量
+    '''
+    def __init__(self, n_frames=16):
+        super().__init__()
+
+        self.vqa = torch.load('pretrain/DOVER_technical_backbone.pth')
+        self.video_encoder_technical = eff_model.EVLTransformer(num_frames=n_frames)
+        self.mlp_visual = MLP(512+768, 64, 512)
+        self.ln = nn.LayerNorm([512])
+
+
+    def forward(self, aesthetic_video, technical_video, tokens, epoch=0):
+
+        text_feats = clip_model.encode_text(tokens).float()
+
+        fastvqa_feature = self.vqa(aesthetic_video.permute(0, 2, 1, 3, 4)).mean((-1,-2,-3), keepdim=False)
+        # semantic_feature = self.video_encoder_aesthetic(aesthetic_video)
+        technical_feature = self.video_encoder_technical(technical_video)
+
+            
+        vis_feat = self.mlp_visual(torch.cat((fastvqa_feature, technical_feature), dim=-1))
+        vis_feat = self.ln(vis_feat)
+        match = torch.einsum('bf,bf -> b', text_feats, vis_feat)
+
+        return match
+
+
 class fast_model(nn.Module):
     def __init__(self, n_frames=16):
         super().__init__()
@@ -170,3 +199,65 @@ class tech_model(nn.Module):
         vis_feat = self.ln(vis_feat)
         match = torch.einsum('bf,bf -> b', txt_feat, vis_feat)
         return match
+
+
+class tdam(nn.Module):
+    def __init__(self, n_frames=16):
+        super().__init__()
+        self.video_encoder_aesthetic = video_encoder(n_frames//2)
+        self.mlp_visual = MLP(512, 64, 512)
+        self.ln = nn.LayerNorm([512])
+
+    def forward(self, aesthetic_video, technical_video, tokens, epoch=0):
+        txt_feat = clip_model.encode_text(tokens)
+        semantic_feature = self.video_encoder_aesthetic(technical_video)
+        vis_feat = self.mlp_visual(semantic_feature)
+        vis_feat = self.ln(vis_feat)
+        match = torch.einsum('bf,bf -> b', txt_feat, vis_feat)
+        return match
+
+
+class ad_tm(nn.Module):
+    def __init__(self, n_frames=16):
+        super().__init__()
+        self.video_encoder_technical = eff_model.EVLTransformer(num_frames=n_frames//2)
+        self.mlp_visual = MLP(512, 64, 512)
+        self.ln = nn.LayerNorm([512])
+
+    def forward(self, aesthetic_video, technical_video, tokens, epoch=0):
+        txt_feat = clip_model.encode_text(tokens)
+        technical_feature = self.video_encoder_technical(aesthetic_video)
+        vis_feat = self.mlp_visual(technical_feature)
+        vis_feat = self.ln(vis_feat)
+        match = torch.einsum('bf,bf -> b', txt_feat, vis_feat)
+        return match
+
+
+class fast_aes_match(nn.Module):
+    def __init__(self, n_frames=16):
+        super().__init__()
+        self.fastvqa = torch.load('pretrain/DOVER_technical_backbone.pth')
+        self.mlp_tech = MLP(768, 64, 512)
+        self.ln = nn.LayerNorm([512])
+
+    def forward(self, aesthetic_video, technical_video, tokens, epoch=0):
+        txt_feat = clip_model.encode_text(tokens)
+        semantic_feature = self.fastvqa(aesthetic_video.permute(0, 2, 1, 3, 4)).mean((-1,-2,-3), keepdim=False)
+        vis_feat = self.mlp_tech(semantic_feature)
+        vis_feat = self.ln(vis_feat)
+        match = torch.einsum('bf,bf -> b', txt_feat, vis_feat)
+        return match
+
+        
+class coef_model(nn.Module):
+    def __init__(self, num_models=8):
+        super().__init__()
+        self.projector = nn.Linear(num_models, 1)
+        self.projector.weight.data.normal_(mean=1, std=0.05)
+        self.dropout = nn.Dropout(0.5)
+
+    def forward(self, scores):
+        out = self.dropout(self.projector(scores))
+
+        return out.squeeze(-1)
+        

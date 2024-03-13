@@ -5,10 +5,12 @@
 *.pt
 *.pth
 *.json
-
+*.txt
 
 
 # 文件夹
 pretrain/*
 wandb
 __pycache__
+.vscode
+results
