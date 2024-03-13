@@ -43,7 +43,6 @@ class video_encoder(nn.Module):
         super().__init__()
         self.temp_fusion = visual_prompt(clip_model.state_dict(), video_len)
         self.vis_proj = nn.Linear(768, 512, bias=False)
-        self.conv1d = nn.Conv1d(512, 512, kernel_size=3, padding=1)
     def forward(self, video):
         b, t, c, h, w = video.shape
 

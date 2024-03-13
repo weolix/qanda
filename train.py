@@ -62,16 +62,18 @@ def read_video(video_path: str):
 
 class bagging_Dataset(Dataset):
     # the dataset class reads video names and scores from the output of `generate_results` function
-    def __init__(self, data_dir='results', train = True):
+    def __init__(self, data_dir='results', mode='train-train'):
         '''
         args:
-            mode: 'train' or 'val'
+            mode: 'train-train' or 'train-val' or 'val-all'
         '''
         super(bagging_Dataset, self).__init__()
-        self.train = train
+        self.mode = mode
         outputs = os.listdir(data_dir)
         self.data = {}
         self.score = []
+        self.names = []
+        
         with open('/home/user/XUX/NTIREdataset/train-all.txt', 'r', encoding='utf-8') as f:
             for line in f:
                 video_path, description, label = line.strip().split('|')
@@ -82,6 +84,7 @@ class bagging_Dataset(Dataset):
             reader = csv.reader(file)
             for row in reader:
                 self.data[row[0]] = []
+                self.names.append(row[0])
 
         for out in outputs:
             with open(os.path.join(data_dir, out), 'r', newline='', encoding='utf-8') as file:
@@ -91,13 +94,13 @@ class bagging_Dataset(Dataset):
         
         
     def __len__(self):
-        return 6000 if self.train else 1000
+        return 6000 if 'train' in self.mode else 1000
     
     def __getitem__(self, index):
-        if not self.train:
+        if self.mode == 'train-val':
             index = index + 6000
-
-        name, _, score = self.score[index]
+        name = self.names[index]
+        _, _, score = self.score[index]
         data = torch.tensor(self.data[name])
         
         return name, data, score
@@ -278,12 +281,13 @@ def train(model, train_set, val_set = None, epochs=30, batch_size=24, lr=0.00005
     wandb.finish()
 
 
-def validate(model, val_set, norm='manmin'):
+def validate(model, val_set, norm='manmin', mode = 'val'):
     '''
     args:
         model: 模型
         val_set: 验证集
         norm: 归一化方式，'manmin'或'zscore'
+        mode: 'val'或'save'
     '''
     val_loader = DataLoader(val_set, 16, num_workers=2, pin_memory=True)
 
@@ -294,7 +298,8 @@ def validate(model, val_set, norm='manmin'):
             tokens = open_clip.tokenize(desc).to(Device)
             a = a.to(Device)
             t = t.to(Device)
-            gt=gt.to(Device)
+            gts.extend(list(gt.detach().cpu().numpy()))
+            names.extend(v_name)
             try:
                 with torch.no_grad() and autocast():
                     res = model(a, t, tokens)
@@ -309,45 +314,56 @@ def validate(model, val_set, norm='manmin'):
 
 
     elif isinstance(model, list):
+        num = len(model)
         for m in model:
             m.eval()
-        prs1, prs2, gts = [], [], []
+        gts, names = [], []
+        prs = {i:[] for i in range(num)}
+        # data loop
         for a, t, desc, gt, v_name in track(val_loader,description=' val '):
             tokens = open_clip.tokenize(desc).to(Device)
             a = a.to(Device)
             t = t.to(Device)
-            gt=gt.to(Device)
-            with torch.no_grad():
-                res1 = model[0](a, t, tokens)
-            with torch.no_grad() and autocast():
-                res2 = model[1](a, t, tokens)
-            prs1.extend(list(res1.detach().cpu().numpy()))
-            prs2.extend(list(res2.detach().cpu().numpy()))
             gts.extend(list(gt.detach().cpu().numpy()))
-        prs1 = np.stack(prs1, 0).squeeze()
-        prs2 = np.stack(prs2, 0).squeeze()
+            names.extend(v_name)
+            res = {}
+
+            # model loop
+            for i, m in enumerate(model):
+                m.half()
+                with torch.no_grad() and autocast():
+                    res = m(a, t, tokens)
+
+                prs[i].extend(list(res.detach().cpu().numpy()))
+            
+        prs = [np.stack(prs[i], 0).squeeze() for i in range(num)]
+        
         if norm == 'manmin':
-            pr1 = (prs1 - np.min(prs1)) / (np.max(prs1) - np.min(prs1))
-            pr2 = (prs2 - np.min(prs2)) / (np.max(prs2) - np.min(prs2))
-            prs = pr1 + pr2
+            prs = [(prs[i] - np.min(prs[i])) / (np.max(prs[i]) - np.min(prs[i])) for i in range(num)]
+            prs = np.stack(prs, 0).sum(0)
         elif norm == 'zscore':
-            pr1 = (prs1 - np.mean(prs1)) / np.std(prs1)
-            pr2 = (prs2 - np.mean(prs2)) / np.std(prs2)
-            prs = pr1 + pr2
+            prs = [(prs[i] - np.mean(prs[i])) / (np.std(prs[i])) for i in range(num)]
+            prs = np.stack(prs, 0).sum(0)
 
-    gts = np.stack(gts, 0).squeeze()
-
-    srcc, plcc = spearmanr(prs, gts)[0], pearsonr(prs, gts)[0]
-    print('\tsrcc\t\t\tplcc')
-    print(srcc, '\t', plcc)
+    if mode == 'val':
+        gts = np.stack(gts, 0).squeeze()
+        srcc, plcc = spearmanr(prs, gts)[0], pearsonr(prs, gts)[0]
+        print('\tsrcc\t\t\tplcc')
+        print(srcc, '\t', plcc)
+    elif mode == 'save':
+        with open(r"results/output.txt", 'w', newline='', encoding='utf-8') as file:
+            writer = csv.writer(file)
+            for pr, name in zip(prs, names):
+                writer.writerow([name, pr])
 
 
 def generate_result(model, test_data, sv_nm=None):
-    if sv_nm[-4:]  not in ['.csv', '.txt']:
-        sv_nm += '.txt'
-    if sv_nm in os.listdir('results'):
-        print(sv_nm + ' already exists')
-        return
+    if sv_nm is not None:
+        if sv_nm[-4:]  not in ['.csv', '.txt']:
+            sv_nm += '.txt'
+        if sv_nm in os.listdir('results'):
+            print(sv_nm + ' already exists')
+            return
     val_prs, vid_names = [], []
     val_loader = DataLoader(test_data, 16, num_workers=4, pin_memory=True)
     
@@ -420,9 +436,8 @@ def generate_result(model, test_data, sv_nm=None):
         zp.write("../NTIREdataset/output.txt", "output.txt")
         zp.write("../NTIREdataset/output.txt", "readme.txt")
         zp.close()
+
     else:
-        
-        
         with open('results/' + sv_nm, 'w', newline='', encoding='utf-8') as file:
             writer = csv.writer(file)
             for pr, name in zip(prs, vid_names):
@@ -485,6 +500,36 @@ def train_coef(model, train_set, val_set, epochs=1000, bs=1000, lr=0.000, num_wk
     wandb.finish()
 
 
+def gen_res_from_labels(dataset):
+    dataloader = DataLoader(dataset, 1000)
+    prs, v_names = [], []
+    for v_name, data, _ in dataloader:
+        data = data.to(Device)
+        with torch.no_grad() and autocast():
+            res = data.mean(-1).to('cpu')
+        prs.extend(list(res.detach().cpu().numpy()))
+        v_names.extend(list(v_name))
+        
+    prs = np.stack(res, 0).squeeze()
+
+    with open(r"../NTIREdataset/output.txt", 'w', newline='', encoding='utf-8') as file:
+        writer = csv.writer(file)
+        for pr, name in zip(prs, v_names):
+            writer.writerow([name, pr])
+    
+    with open(r"../NTIREdataset/readme.txt", 'w', encoding='utf-8') as file:
+        file.write(f"Runtime per video [s] : " + str(1) + '\n'
+                    "CPU[1] / GPU[0] : 0" + '\n' + 
+                    "Extra Data [1] / No Extra Data [0] : 0" + '\n' +
+                    "LLM [1] / No LLM [0] : 0" + '\n' + 
+                    'Other description : ' + 'based on open_clip.' + '\n')
+        
+    import zipfile
+    zp = zipfile.ZipFile('./submission.zip', 'w')
+    zp.write("../NTIREdataset/output.txt", "output.txt")
+    zp.write("../NTIREdataset/readme.txt", "readme.txt")
+    zp.close()
+    
 
 
 
@@ -493,22 +538,29 @@ if __name__ == '__main__':
         generator = torch.Generator().manual_seed(37)
 
         # train_allset = NTIRE_Dataset(r'../NTIREdataset', mode='train-all')
-        train_trainset = NTIRE_Dataset(r'../NTIREdataset', mode='train-train')
+        # train_trainset = NTIRE_Dataset(r'../NTIREdataset', mode='train-train')
         train_valset = NTIRE_Dataset(r'../NTIREdataset', mode='train-val')
-        val_allset = NTIRE_Dataset(r'../NTIREdataset', mode='val-all')
+        # val_allset = NTIRE_Dataset(r'../NTIREdataset', mode='val-all')
         # testset = NTIRE_Dataset(r'../NTIREdataset', mode='test')
         # bagging_train = bagging_Dataset('results', train=True)
         # bagging_val = bagging_Dataset('results', train=False)
-        
+        # begging_val_all = bagging_Dataset('results', mode='val-all')
+
         # train_coef(dbclip.coef_model().to(Device), bagging_train, bagging_val, epochs=1000, bs=1000, lr=0.00005, num_wks=0, msg='default')
-        model = [dbclip.fast_model(n_frames=10).to(Device), dbclip.newModel(16).to(Device)]
-        # model[0].load_state_dict(torch.load(r'pretrain/fast76.pth').state_dict(), strict=True)
-        # model[1].load_state_dict(torch.load(r'pretrain/best7777.pth').state_dict(), strict=True)
+        model = [
+            dbclip.fast_model(n_frames=10).to(Device), 
+            dbclip.newModel(16).to(Device), 
+            dbclip.tech_model(n_frames=16).to(Device),
+            # torch.load(r'pretrain/aes69_freeze.pth')
+        ]
+        model[0].load_state_dict(torch.load(r'pretrain/fast763.pth').state_dict(), strict=True)
+        model[1].load_state_dict(torch.load(r'pretrain/best7777.pth').state_dict(), strict=True)
+        model[2].load_state_dict(torch.load(r'pretrain/tech_76.pth').state_dict(), strict=True)
 
         # ad_tm_model = dbclip.ad_tm(n_frames=16).to(Device)
         # fast_aes_match = dbclip.fast_aes_match(n_frames=16).to(Device)
         # aesmodel = dbclip.aes_model(n_frames=16).to(Device)
-        # techmodel = dbclip.tech_model(n_frames=16).to(Device)
+        
         # fastmodel = dbclip.fast_model(n_frames=16).to(Device)
         # fast_aes_match.load_state_dict(torch.load(r'pretrain/now.pth').state_dict(), strict=True)
         fast_clip_model = dbclip.fast_clip_decoder_model(n_frames=16).to(Device)
@@ -544,15 +596,15 @@ if __name__ == '__main__':
         #       msg="default with l1 loss"
         #       )
         
-        # validate(model, train_valset)
+        validate(model, train_valset, mode='save')
 
-        for model_pth in os.listdir('pretrain'):
-            if model_pth == 'DOVER_technical_backbone.pth':
-                continue
+        # for model_pth in os.listdir('pretrain'):
+        #     if model_pth == 'DOVER_technical_backbone.pth':
+        #         continue
 
-            model = torch.load('pretrain/' + model_pth)
-            generate_result(model, val_allset, model_pth[:-4]+'_val')
+        #     model = torch.load('pretrain/' + model_pth)
+        #     generate_result(model, val_allset, model_pth[:-4]+'_val')
 
-
+        # gen_res_from_labels(begging_val_all)
 
     main()

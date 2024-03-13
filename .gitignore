@@ -6,7 +6,7 @@
 *.pth
 *.json
 *.txt
-
+*.zip
 
 # 文件夹
 pretrain/*
