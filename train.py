@@ -290,25 +290,21 @@ def validate(model, val_set, norm='manmin', mode = 'val'):
         mode: 'val'或'save'
     '''
     val_loader = DataLoader(val_set, 16, num_workers=2, pin_memory=True)
-
-    if issubclass(type(model), torch.nn.Module):
-        model.eval()
-        prs, gts = [], []
+    
+    if isinstance(model, torch.nn.Module):
+        model.eval().half()
+        prs, gts, names = [], [], []
         for a, t, desc, gt, v_name in track(val_loader,description=' val '):
             tokens = open_clip.tokenize(desc).to(Device)
             a = a.to(Device)
             t = t.to(Device)
             gts.extend(list(gt.detach().cpu().numpy()))
             names.extend(v_name)
-            try:
-                with torch.no_grad() and autocast():
-                    res = model(a, t, tokens)
-            except:
-                print('error with autocast')
-                with torch.no_grad():
-                    res = model(a, t, tokens)
+
+            with torch.no_grad() and autocast():
+                res = model(a, t, tokens)
+
             prs.extend(list(res.detach().cpu().numpy()))
-            gts.extend(list(gt.detach().cpu().numpy()))
             torch.cuda.empty_cache()
         prs = np.stack(prs, 0).squeeze()
 
@@ -317,8 +313,8 @@ def validate(model, val_set, norm='manmin', mode = 'val'):
         num = len(model)
         for m in model:
             m.eval()
-        gts, names = [], []
-        prs = {i:[] for i in range(num)}
+        
+        prs, gts, names = {i:[] for i in range(num)}, [], []
         # data loop
         for a, t, desc, gt, v_name in track(val_loader,description=' val '):
             tokens = open_clip.tokenize(desc).to(Device)
@@ -537,33 +533,35 @@ if __name__ == '__main__':
     def main():
         generator = torch.Generator().manual_seed(37)
 
-        # train_allset = NTIRE_Dataset(r'../NTIREdataset', mode='train-all')
-        # train_trainset = NTIRE_Dataset(r'../NTIREdataset', mode='train-train')
+        train_allset = NTIRE_Dataset(r'../NTIREdataset', mode='train-all')
+        train_trainset = NTIRE_Dataset(r'../NTIREdataset', mode='train-train')
         train_valset = NTIRE_Dataset(r'../NTIREdataset', mode='train-val')
-        # val_allset = NTIRE_Dataset(r'../NTIREdataset', mode='val-all')
+        val_allset = NTIRE_Dataset(r'../NTIREdataset', mode='val-all')
         # testset = NTIRE_Dataset(r'../NTIREdataset', mode='test')
         # bagging_train = bagging_Dataset('results', train=True)
         # bagging_val = bagging_Dataset('results', train=False)
         # begging_val_all = bagging_Dataset('results', mode='val-all')
 
         # train_coef(dbclip.coef_model().to(Device), bagging_train, bagging_val, epochs=1000, bs=1000, lr=0.00005, num_wks=0, msg='default')
-        model = [
-            dbclip.fast_model(n_frames=10).to(Device), 
-            dbclip.newModel(16).to(Device), 
-            dbclip.tech_model(n_frames=16).to(Device),
-            # torch.load(r'pretrain/aes69_freeze.pth')
-        ]
-        model[0].load_state_dict(torch.load(r'pretrain/fast763.pth').state_dict(), strict=True)
-        model[1].load_state_dict(torch.load(r'pretrain/best7777.pth').state_dict(), strict=True)
-        model[2].load_state_dict(torch.load(r'pretrain/tech_76.pth').state_dict(), strict=True)
-
+        # model = [
+        #     dbclip.fast_model(n_frames=10).to(Device), 
+        #     dbclip.newModel(16).to(Device), 
+        #     dbclip.tech_model(n_frames=16).to(Device),
+        #     # torch.load(r'pretrain/aes69_freeze.pth')
+        # ]
+        # model[0].load_state_dict(torch.load(r'pretrain/fast763.pth').state_dict(), strict=True)
+        # model[1].load_state_dict(torch.load(r'pretrain/best7777.pth').state_dict(), strict=True)
+        # model[2].load_state_dict(torch.load(r'pretrain/tech_76.pth').state_dict(), strict=True)
+        # model = dbclip.newModel(16).to(Device)
+        # model = torch.load(r'pretrain/now.pth')
+        # model.load_state_dict(torch.load(r'pretrain/best7777.pth').state_dict(), strict=True)
         # ad_tm_model = dbclip.ad_tm(n_frames=16).to(Device)
         # fast_aes_match = dbclip.fast_aes_match(n_frames=16).to(Device)
         # aesmodel = dbclip.aes_model(n_frames=16).to(Device)
         
-        # fastmodel = dbclip.fast_model(n_frames=16).to(Device)
+        fastmodel = dbclip.fast_model(n_frames=16).to(Device)
         # fast_aes_match.load_state_dict(torch.load(r'pretrain/now.pth').state_dict(), strict=True)
-        fast_clip_model = dbclip.fast_clip_decoder_model(n_frames=16).to(Device)
+        # fast_clip_model = dbclip.fast_clip_decoder_model(n_frames=16).to(Device)
 
         config = {
             'aesmodel' :
@@ -586,17 +584,17 @@ if __name__ == '__main__':
             }
         }
 
-        # train(model[1], 
-        #       train_trainset, train_valset, 
-        #       epochs=50, 
-        #       batch_size=16, 
-        #       lr=0.00002, 
-        #       num_wks=3,
-        #       best_mcc=0.74,
-        #       msg="default with l1 loss"
-        #       )
+        train(fastmodel, 
+              train_allset,
+              epochs=30, 
+              batch_size=20, 
+              lr=0.00001, 
+              num_wks=3,
+              best_mcc=0.74,
+              msg="default"
+              )
         
-        validate(model, train_valset, mode='save')
+        # validate([model]*4, val_allset, mode='save')
 
         # for model_pth in os.listdir('pretrain'):
         #     if model_pth == 'DOVER_technical_backbone.pth':
