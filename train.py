@@ -186,7 +186,7 @@ def train(model, train_set, val_set = None, epochs=30, batch_size=24, lr=0.00005
     train_loader  = DataLoader(train_set, batch_size, shuffle=True, num_workers=num_wks, pin_memory=True)
     val_loader    = DataLoader(val_set, 16, num_workers=num_wks, pin_memory=True)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs, eta_min=1e-8)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs, eta_min=1e-7)
 
     wandb.init(
     project="aicg-vqa",
@@ -208,7 +208,7 @@ def train(model, train_set, val_set = None, epochs=30, batch_size=24, lr=0.00005
         
         # train
         model.train(True)
-        
+        low_loss = 100
         epoch_loss = 0.
         for a, t, desc, gt, v_name in track(train_loader, description='train'):
             torch.cuda.empty_cache()
@@ -241,8 +241,8 @@ def train(model, train_set, val_set = None, epochs=30, batch_size=24, lr=0.00005
         wandb.log({'epoch loss': epoch_loss, 'epoch': epoch})
 
         if val_set is None:
-             if (epoch+1) % 5 == 0:
-                torch.save(model, f'pretrain/now_{epoch+1}.pth')
+             if epoch_loss < low_loss:
+                torch.save(model, f'pretrain/lowloss.pth')
         
 
         else:
@@ -281,7 +281,7 @@ def train(model, train_set, val_set = None, epochs=30, batch_size=24, lr=0.00005
     wandb.finish()
 
 
-def validate(model, val_set, norm='manmin', mode = 'val'):
+def validate(model, val_set, mode = 'val', times=2):
     '''
     args:
         model: 模型
@@ -293,53 +293,55 @@ def validate(model, val_set, norm='manmin', mode = 'val'):
     
     if isinstance(model, torch.nn.Module):
         model.eval().half()
-        prs, gts, names = [], [], []
-        for a, t, desc, gt, v_name in track(val_loader,description=' val '):
-            tokens = open_clip.tokenize(desc).to(Device)
-            a = a.to(Device)
-            t = t.to(Device)
-            gts.extend(list(gt.detach().cpu().numpy()))
-            names.extend(v_name)
+        prst = []
+        for time in range(times):
+            prs, gts, names = [], [], []
+            for a, t, desc, gt, v_name in track(val_loader,description=f'val({time+1}/{times})'):
+                tokens = open_clip.tokenize(desc).to(Device)
+                a = a.to(Device)
+                t = t.to(Device)
+                gts.extend(list(gt.detach().cpu().numpy()))
+                names.extend(v_name)
 
-            with torch.no_grad() and autocast():
-                res = model(a, t, tokens)
+                with torch.no_grad() and autocast():
+                    res = model(a, t, tokens)
 
-            prs.extend(list(res.detach().cpu().numpy()))
-            torch.cuda.empty_cache()
-        prs = np.stack(prs, 0).squeeze()
-
+                prs.extend(list(res.detach().cpu().numpy()))
+                torch.cuda.empty_cache()
+            prs = np.stack(prs, 0).squeeze()
+            prst.append(prs)
+        prs = np.stack(prst, 0).mean(0)
 
     elif isinstance(model, list):
         num = len(model)
         for m in model:
             m.eval()
-        
-        prs, gts, names = {i:[] for i in range(num)}, [], []
-        # data loop
-        for a, t, desc, gt, v_name in track(val_loader,description=' val '):
-            tokens = open_clip.tokenize(desc).to(Device)
-            a = a.to(Device)
-            t = t.to(Device)
-            gts.extend(list(gt.detach().cpu().numpy()))
-            names.extend(v_name)
-            res = {}
+        prst = []
+        for time in range(times):
+            prs, gts, names = {i:[] for i in range(num)}, [], []
+            # data loop
+            for a, t, desc, gt, v_name in track(val_loader,description=f'val({time+1}/{times})'):
+                tokens = open_clip.tokenize(desc).to(Device)
+                a = a.to(Device)
+                t = t.to(Device)
+                gts.extend(list(gt.detach().cpu().numpy()))
+                names.extend(v_name)
+                res = {}
 
-            # model loop
-            for i, m in enumerate(model):
-                m.half()
-                with torch.no_grad() and autocast():
-                    res = m(a, t, tokens)
+                # model loop
+                for i, m in enumerate(model):
+                    m.half()
+                    with torch.no_grad() and autocast():
+                        res = m(a, t, tokens)
 
-                prs[i].extend(list(res.detach().cpu().numpy()))
-            
-        prs = [np.stack(prs[i], 0).squeeze() for i in range(num)]
-        
-        if norm == 'manmin':
+                    prs[i].extend(list(res.detach().cpu().numpy()))
+                
+            prs = [np.stack(prs[i], 0).squeeze() for i in range(num)]
             prs = [(prs[i] - np.min(prs[i])) / (np.max(prs[i]) - np.min(prs[i])) for i in range(num)]
             prs = np.stack(prs, 0).sum(0)
-        elif norm == 'zscore':
-            prs = [(prs[i] - np.mean(prs[i])) / (np.std(prs[i])) for i in range(num)]
-            prs = np.stack(prs, 0).sum(0)
+            prst.append(prs)
+        prs = np.stack(prst, 0).mean(0)
+            
 
     if mode == 'val':
         gts = np.stack(gts, 0).squeeze()
@@ -351,6 +353,7 @@ def validate(model, val_set, norm='manmin', mode = 'val'):
             writer = csv.writer(file)
             for pr, name in zip(prs, names):
                 writer.writerow([name, pr])
+        print('results saved in results/output.txt')
 
 
 def generate_result(model, test_data, sv_nm=None):
@@ -558,10 +561,11 @@ if __name__ == '__main__':
         # ad_tm_model = dbclip.ad_tm(n_frames=16).to(Device)
         # fast_aes_match = dbclip.fast_aes_match(n_frames=16).to(Device)
         # aesmodel = dbclip.aes_model(n_frames=16).to(Device)
-        
-        fastmodel = dbclip.fast_model(n_frames=16).to(Device)
+        techmodel = dbclip.tech_model(n_frames=16).to(Device)
+        # fastmodel = dbclip.fast_model(n_frames=16).to(Device)
         # fast_aes_match.load_state_dict(torch.load(r'pretrain/now.pth').state_dict(), strict=True)
         # fast_clip_model = dbclip.fast_clip_decoder_model(n_frames=16).to(Device)
+        # fastmodel.load_state_dict(torch.load(r'pretrain/now_30.pth').state_dict(), strict=True)
 
         config = {
             'aesmodel' :
@@ -582,19 +586,28 @@ if __name__ == '__main__':
                 'best_mcc' : 0.74,
                 'msg' : "fast model with tech data"
             }
+            # 'fastmodel':
+            # {
+            #     'epochs':30, 
+            #     'batch_size':20, 
+            #     'lr':0.00001, 
+            #     'num_wks':3,
+            #     'best_mcc':0.74,
+            #     'msg':"fast model with tech data",
+            # }
         }
 
-        train(fastmodel, 
+        train(techmodel, 
               train_allset,
-              epochs=30, 
+              epochs=50, 
               batch_size=20, 
-              lr=0.00001, 
-              num_wks=3,
+              lr=0.00005, 
+              num_wks=4,
               best_mcc=0.74,
-              msg="default"
+              msg="tech model only"
               )
         
-        # validate([model]*4, val_allset, mode='save')
+        # validate([fastmodel]*2, val_allset, mode='save', times=2)
 
         # for model_pth in os.listdir('pretrain'):
         #     if model_pth == 'DOVER_technical_backbone.pth':
